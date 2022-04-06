@@ -1,0 +1,6 @@
+github.com/dgryski/go-minhash v0.0.0-20190315135803-ad340ca03076 h1:EB7M2v8Svo3kvIDy+P1YDE22XskDQP+TEYGzeDwPAN4=
+github.com/dgryski/go-minhash v0.0.0-20190315135803-ad340ca03076/go.mod h1:VBi0XHpFy0xiMySf6YpVbRqrupW4RprJ5QTyN+XvGSM=
+github.com/ekzhu/lshensemble v1.1.0 h1:qxuckiF7m1ARGe8zxyqmzWFgpNVAsORbatF5XIj/oYc=
+github.com/ekzhu/lshensemble v1.1.0/go.mod h1:9O+7M8zbVXy2WMyTT0zgia+rsQXrX0gB9CihuFwwRK8=
+github.com/orcaman/concurrent-map v1.0.0 h1:I/2A2XPCb4IuQWcQhBhSwGfiuybl/J0ev9HDbW65HOY=
+github.com/orcaman/concurrent-map v1.0.0/go.mod h1:Lu3tH6HLW3feq74c2GC+jIMS/K2CFcDWnWD9XkenwhI=
