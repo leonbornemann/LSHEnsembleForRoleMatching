@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/ekzhu/lshensemble"
 	"log"
+	"math/rand"
 	"os"
 	"sort"
 	"time"
@@ -58,6 +59,7 @@ func main() {
 	fmt.Println(os.Args)
 	inputFilePath := os.Args[1]
 	var outputFilepath = os.Args[2]
+	var mode = os.Args[3]
 	var keys, domains = readLinebyLine(inputFilePath)
 	var keyToIndexMap = make(map[string]int)
 	for i := range keys {
@@ -70,6 +72,7 @@ func main() {
 
 	// set the minhash seed
 	var seed int64 = 42
+	rand.Seed(seed)
 
 	// set the number of hash functions
 	numHash := 256
@@ -125,6 +128,88 @@ func main() {
 
 	// pick a domain to use as the query
 	fmt.Println("Found ", len(domainRecords), "domains to query - begin querying")
+	if mode == "sample" {
+		drawSample(domainRecords, keys, index_eqd, domains, keyToIndexMap, resultFile)
+	} else {
+		doFullBlocking(domainRecords, keys, index_eqd, domains, keyToIndexMap, resultFile)
+	}
+	elapsed := time.Since(start)
+	log.Printf("Application took %s", elapsed)
+}
+
+func ToSlice(c <-chan interface{}) []interface{} {
+	s := make([]interface{}, 0)
+	for i := range c {
+		s = append(s, i)
+	}
+	return s
+}
+
+func drawSample(domainRecords []*lshensemble.DomainRecord,
+	keys []string,
+	index_eqd *lshensemble.LshEnsemble,
+	domains []map[string]bool,
+	keyToIndexMap map[string]int,
+	resultFile *os.File) {
+	var sampled = 0
+	var chosen = make(map[string]bool)
+	for sampled < 500 {
+		var queryIndex = rand.Intn(len(domainRecords))
+		queryKey := keys[queryIndex]
+		//fmt.Println("Querying ", queryKey)
+		querySig := domainRecords[queryIndex].Signature
+		querySize := domainRecords[queryIndex].Size
+
+		// set the containment threshold
+		threshold := 0.8
+
+		// get the keys of the candidate domains (may contain false positives)
+		// through a channel with option to cancel early.
+		done := make(chan struct{})
+		defer close(done) // Important!!
+		results := index_eqd.Query(querySig, querySize, threshold, done)
+		var resultsAsSlice = ToSlice(results)
+		var queryDomain = domains[queryIndex]
+		var resultIndex = rand.Intn(len(resultsAsSlice))
+		var keyAsString = resultsAsSlice[resultIndex].(string)
+		var keyIndex = keyToIndexMap[keyAsString]
+		//compute actual overlap:
+		var resultDomain = domains[keyIndex]
+		var overlap = computeActualOverlap(queryDomain, resultDomain)
+		var combinedKey = queryKey + "_" + keyAsString
+		if queryKey > keyAsString {
+			combinedKey = keyAsString + "_" + queryKey
+		}
+		var resultAlreadyContained = false
+		if _, ok := chosen[combinedKey]; ok {
+			resultAlreadyContained = true
+		}
+		if overlap >= threshold && !resultAlreadyContained && queryKey != keyAsString {
+			if queryKey < keyAsString {
+				var line = queryKey + "," + keyAsString + "," + fmt.Sprintf("%f", overlap) + "\n"
+				resultFile.WriteString(line)
+			} else {
+				var line = keyAsString + "," + queryKey + "," + fmt.Sprintf("%f", overlap) + "\n"
+				resultFile.WriteString(line)
+			}
+			sampled++
+			if sampled == 46 {
+				fmt.Println("asd")
+			}
+			chosen[combinedKey] = true
+		} else {
+			//fmt.Println("Skipping Match ", queryKey, keyAsString, "cur size", sampled)
+		}
+
+	}
+}
+
+func doFullBlocking(domainRecords []*lshensemble.DomainRecord,
+	keys []string,
+	index_eqd *lshensemble.LshEnsemble,
+	domains []map[string]bool,
+	keyToIndexMap map[string]int,
+	resultFile *os.File) {
 	var processed = 0
 	for i := range domainRecords {
 		if processed%1000 == 0 {
@@ -160,8 +245,6 @@ func main() {
 		processed++
 	}
 	fmt.Println("done")
-	elapsed := time.Since(start)
-	log.Printf("Application took %s", elapsed)
 }
 
 func computeActualOverlap(domain map[string]bool, domain2 map[string]bool) float64 {
