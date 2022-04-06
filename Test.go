@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"time"
 )
 
 // Users struct which contains
@@ -52,6 +53,8 @@ func readLinebyLine(filepath string) ([]string, []map[string]bool) {
 }
 
 func main() {
+	start := time.Now()
+	log.Printf("Beginning execution")
 	fmt.Println(os.Args)
 	inputFilePath := os.Args[1]
 	var outputFilepath = os.Args[2]
@@ -156,8 +159,9 @@ func main() {
 		}
 		processed++
 	}
-
 	fmt.Println("done")
+	elapsed := time.Since(start)
+	log.Printf("Application took %s", elapsed)
 }
 
 func computeActualOverlap(domain map[string]bool, domain2 map[string]bool) float64 {
