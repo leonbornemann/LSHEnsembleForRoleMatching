@@ -28,7 +28,7 @@ func readLinebyLine(filepath string) ([]string, []map[string]bool) {
 	scanner := bufio.NewScanner(file)
 	// optionally, resize scanner's capacity for lines over 64K, see next example
 
-	const maxCapacity = 1000000 // your required line length
+	const maxCapacity = 10000000 // your required line length
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 	// append works on nil slices.
