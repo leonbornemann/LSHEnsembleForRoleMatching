@@ -9,6 +9,8 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strconv"
+	"sync"
 	"time"
 )
 
@@ -57,38 +59,23 @@ func main() {
 	start := time.Now()
 	log.Printf("Beginning execution")
 	fmt.Println(os.Args)
-	inputFilePath := os.Args[1]
-	var outputFilepath = os.Args[2]
-	var mode = os.Args[3]
-	var keys, domains = readLinebyLine(inputFilePath)
+	inputFilePathIndex := os.Args[1]
+	inputFilePathQuery := os.Args[2] //set query equal to index for mode "rm"
+	var resultDir = os.Args[3]
+	var threshold, _ = strconv.ParseFloat(os.Args[4], 64) //containment threshold
+	var mode = os.Args[5]                                 //choose RM or RCBRB
+	var indexKeys, indexDomains = readLinebyLine(inputFilePathIndex)
+	var queryKeys, queryDomains = readLinebyLine(inputFilePathQuery)
 	var keyToIndexMap = make(map[string]int)
-	for i := range keys {
-		keyToIndexMap[keys[i]] = i
-		//fmt.Println(keys[i], domains[i])
+	for i := range indexKeys {
+		keyToIndexMap[indexKeys[i]] = i
+		//fmt.Println(indexKeys[i], indexDomains[i])
 	}
-
-	// initializing the domain records to hold the MinHash signatures
-	domainRecords := make([]*lshensemble.DomainRecord, len(domains))
-
-	// set the minhash seed
-	var seed int64 = 42
-	rand.Seed(seed)
 
 	// set the number of hash functions
 	numHash := 256
-
-	// create the domain records with the signatures
-	for i := range domains {
-		mh := lshensemble.NewMinhash(seed, numHash)
-		for v := range domains[i] {
-			mh.Push([]byte(v))
-		}
-		domainRecords[i] = &lshensemble.DomainRecord{
-			Key:       keys[i],
-			Size:      len(domains[i]),
-			Signature: mh.Signature()}
-	}
-	sort.Sort(lshensemble.BySize(domainRecords))
+	indexDomainRecords := createDomainRecords(indexDomains, indexKeys, numHash)
+	queryDomainRecords := createDomainRecords(queryDomains, queryKeys, numHash)
 
 	// Set the number of partitions
 	numPart := 8
@@ -101,7 +88,7 @@ func main() {
 	// Create index using equi-depth partitioning
 	// You can also use BootstrapLshEnsemblePlusEquiDepth for better accuracy
 	index_eqd, err := lshensemble.BootstrapLshEnsembleEquiDepth(numPart, numHash, maxK,
-		len(domainRecords), lshensemble.Recs2Chan(domainRecords))
+		len(indexDomainRecords), lshensemble.Recs2Chan(indexDomainRecords))
 	if err != nil {
 		panic(err)
 	}
@@ -110,7 +97,7 @@ func main() {
 	// You can also use BootstrapLshEnsemblePlusOptimal for better accuracy
 	//index_opt, err := lshensemble.BootstrapLshEnsembleOptimal(numPart, numHash, maxK,
 	//	func() <-chan *lshensemble.DomainRecord {
-	//		return lshensemble.Recs2Chan(domainRecords)
+	//		return lshensemble.Recs2Chan(indexDomainRecords)
 	//	})
 	//if err != nil {
 	//	panic(err)
@@ -118,23 +105,44 @@ func main() {
 
 	fmt.Println("Beginning Querying")
 
-	resultFile, err := os.Create(outputFilepath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	resultFile.WriteString("id1,id2,compatibility\n")
-
-	defer resultFile.Close()
-
 	// pick a domain to use as the query
-	fmt.Println("Found ", len(domainRecords), "domains to query - begin querying")
+	fmt.Println("Found ", len(indexDomainRecords), "indexDomains to query - begin querying")
 	if mode == "sample" {
-		drawSample(domainRecords, keys, index_eqd, domains, keyToIndexMap, resultFile)
+		resultFile, err := os.Create(resultDir + "/results.csv")
+		if err != nil {
+			log.Fatal(err)
+		}
+		drawSample(indexDomainRecords, indexKeys, index_eqd, indexDomains, keyToIndexMap, threshold, resultFile)
+	} else if mode == "rm" {
+		doFullBlocking(indexDomainRecords, indexKeys, index_eqd, indexDomains, queryDomains, keyToIndexMap, threshold, resultDir)
 	} else {
-		doFullBlocking(domainRecords, keys, index_eqd, domains, keyToIndexMap, resultFile)
+		doFullBlocking(queryDomainRecords, queryKeys, index_eqd, indexDomains, queryDomains, keyToIndexMap, threshold, resultDir)
 	}
 	elapsed := time.Since(start)
 	log.Printf("Application took %s", elapsed)
+}
+
+func createDomainRecords(indexDomains []map[string]bool, indexKeys []string, numHash int) []*lshensemble.DomainRecord {
+	// initializing the domain records to hold the MinHash signatures
+	domainRecords := make([]*lshensemble.DomainRecord, len(indexDomains))
+
+	// set the minhash seed
+	var seed int64 = 42
+	rand.Seed(seed)
+
+	// create the domain records with the signatures
+	for i := range indexDomains {
+		mh := lshensemble.NewMinhash(seed, numHash)
+		for v := range indexDomains[i] {
+			mh.Push([]byte(v))
+		}
+		domainRecords[i] = &lshensemble.DomainRecord{
+			Key:       indexKeys[i],
+			Size:      len(indexDomains[i]),
+			Signature: mh.Signature()}
+	}
+	sort.Sort(lshensemble.BySize(domainRecords))
+	return domainRecords
 }
 
 func ToSlice(c <-chan interface{}) []interface{} {
@@ -150,6 +158,7 @@ func drawSample(domainRecords []*lshensemble.DomainRecord,
 	index_eqd *lshensemble.LshEnsemble,
 	domains []map[string]bool,
 	keyToIndexMap map[string]int,
+	threshold float64,
 	resultFile *os.File) {
 	var sampled = 0
 	var chosen = make(map[string]bool)
@@ -159,9 +168,6 @@ func drawSample(domainRecords []*lshensemble.DomainRecord,
 		//fmt.Println("Querying ", queryKey)
 		querySig := domainRecords[queryIndex].Signature
 		querySize := domainRecords[queryIndex].Size
-
-		// set the containment threshold
-		threshold := 0.8
 
 		// get the keys of the candidate domains (may contain false positives)
 		// through a channel with option to cancel early.
@@ -204,47 +210,105 @@ func drawSample(domainRecords []*lshensemble.DomainRecord,
 	}
 }
 
-func doFullBlocking(domainRecords []*lshensemble.DomainRecord,
+func doFullBlockingForQueryIndices(
+	begin int,
+	end int,
+	domainRecords []*lshensemble.DomainRecord,
 	keys []string,
 	index_eqd *lshensemble.LshEnsemble,
-	domains []map[string]bool,
+	indexDomains []map[string]bool,
+	queryDomains []map[string]bool,
 	keyToIndexMap map[string]int,
-	resultFile *os.File) {
+	threshold float64,
+	resultFilePath string,
+	wg *sync.WaitGroup) {
+	defer wg.Done()
+	resultFileOS, err := os.Create(resultFilePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	resultFile := bufio.NewWriter(resultFileOS)
+	resultFile.WriteString("id1,id2,compatibility\n")
+	defer resultFileOS.Close()
 	var processed = 0
-	for i := range domainRecords {
+	//var totalResultCount = 0
+	//var lastAverage = 0.0
+	//var nStableCounts = 0
+	for i := begin; i < end; i++ {
 		if processed%1000 == 0 {
-			fmt.Println("Processed", processed, "/", len(domainRecords), "(", 100.0*float64(processed)/float64(len(domainRecords)), "%)")
+			fmt.Println("Processed in range [", begin, end, ") :", processed, "/", end-begin, "(", 100.0*float64(processed)/float64(end-begin), "%)")
 		}
 		queryKey := keys[i]
 		//fmt.Println("Querying ", queryKey)
 		querySig := domainRecords[i].Signature
 		querySize := domainRecords[i].Size
 
-		// set the containment threshold
-		threshold := 0.8
-
-		// get the keys of the candidate domains (may contain false positives)
+		// get the keys of the candidate indexDomains (may contain false positives)
 		// through a channel with option to cancel early.
 		done := make(chan struct{})
 		defer close(done) // Important!!
 		results := index_eqd.Query(querySig, querySize, threshold, done)
-		var queryDomain = domains[i]
+		var queryDomain = queryDomains[i]
+		var exactMatchCountThisQuery = 0
 		for key := range results {
 			var keyAsString = key.(string)
 			if queryKey < keyAsString {
 				var keyIndex = keyToIndexMap[keyAsString]
 				//compute actual overlap:
-				var resultDomain = domains[keyIndex]
+				var resultDomain = indexDomains[keyIndex]
 				var overlap = computeActualOverlap(queryDomain, resultDomain)
 				if overlap >= threshold && key != queryKey {
+					//var line = strconv.Itoa(i) + "," + strconv.Itoa(keyIndex) + "," + fmt.Sprintf("%f", overlap) + "\n"
 					var line = queryKey + "," + keyAsString + "," + fmt.Sprintf("%f", overlap) + "\n"
 					resultFile.WriteString(line)
+					exactMatchCountThisQuery += 1
 				}
 			}
 		}
 		processed++
 	}
-	fmt.Println("done")
+	resultFile.Flush()
+}
+
+func doFullBlocking(domainRecords []*lshensemble.DomainRecord,
+	keys []string,
+	index_eqd *lshensemble.LshEnsemble,
+	indexDomains []map[string]bool,
+	queryDomains []map[string]bool,
+	keyToIndexMap map[string]int,
+	threshold float64,
+	resultDir string) {
+	//var totalResultCount = 0
+	//var lastAverage = 0.0
+	//var nStableCounts = 0
+	var totalBatchCount = 9
+	borderIncrementas := len(domainRecords) / totalBatchCount
+	prevEnd := 0
+	var wg sync.WaitGroup
+	if borderIncrementas == 0 {
+		wg.Add(1)
+		resultFile := resultDir + "/" + fmt.Sprintf("%d_%d", 0, len(domainRecords))
+		doFullBlockingForQueryIndices(0, len(domainRecords), domainRecords, keys, index_eqd, indexDomains, queryDomains, keyToIndexMap, threshold, resultFile, &wg)
+	} else {
+		for i := 0; i < totalBatchCount; i++ {
+			wg.Add(1)
+			curBegin := prevEnd
+			curEnd := 0
+			if i == totalBatchCount-1 {
+				curEnd = len(domainRecords)
+			} else {
+				curEnd = curBegin + borderIncrementas
+			}
+			//TODO: call goroutine:
+			resultFile := resultDir + "/" + fmt.Sprintf("%d_%d", curBegin, curEnd)
+			fmt.Println("Creating new Task with result file ", resultFile)
+			go doFullBlockingForQueryIndices(curBegin, curEnd, domainRecords, keys, index_eqd, indexDomains, queryDomains, keyToIndexMap, threshold, resultFile, &wg)
+			prevEnd = curEnd
+		}
+		fmt.Println("Avaiting Termination")
+		wg.Wait()
+		fmt.Println("done")
+	}
 }
 
 func computeActualOverlap(domain map[string]bool, domain2 map[string]bool) float64 {
